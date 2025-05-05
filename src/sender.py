@@ -1,144 +1,199 @@
 #!/usr/bin/env python3
 """
-Dummy sender that simulates a sensor device HTTP server
-providing gas, temperature and humidity data.
+Dummy data sender that simulates BME688 sensor.
+Creates a simple HTTP server at http://localhost:8080/ that serves simulated sensor data.
 """
+import socket
+import random
+import time
+import threading
 import http.server
 import socketserver
+from urllib.parse import parse_qs, urlparse
 import json
-import random
-import threading
-import time
-import socket
-import os
-import signal
-import sys
+import numpy as np
 
 # Configuration
-PORT = 8080  # Using 8080 as we can't bind to port 80 without root
-HOST = "localhost"  # Use localhost for testing
-UPDATE_INTERVAL = 1  # seconds between sensor data updates
+HOST = "localhost"  # Interface to bind to
+PORT = 8080          # Port to listen on
 
-# Global variables
-running = True
-sensor_data = {
-    "gas": 0,
-    "temp": 0,
-    "humidity": 0
-}
-
-# Track current server instance
+# Global server reference that can be closed if needed
 current_server = None
 
-class SensorHandler(http.server.BaseHTTPRequestHandler):
-    """HTTP request handler that returns sensor data"""
-    
-    def do_GET(self):
-        """Handle GET requests by returning current sensor data"""
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')  # CORS header
-        self.end_headers()
-        
-        # Send the current sensor data as JSON
-        self.wfile.write(json.dumps(sensor_data).encode())
-    
-    # Make the server quiet
-    def log_message(self, format, *args):
-        return
-
-def update_sensor_data():
-    """Continuously update sensor data with random values"""
-    global sensor_data
-    
-    while running:
-        # Generate random sensor data
-        sensor_data = {
-            "gas": random.uniform(100, 500),            # Gas resistance in ohms
-            "temp": random.uniform(20, 30),             # Temperature in Celsius
-            "humidity": random.uniform(30, 70)          # Humidity percentage
-        }
-        
-        time.sleep(UPDATE_INTERVAL)
-
 class ReuseAddressServer(socketserver.TCPServer):
-    """TCP Server with SO_REUSEADDR option set"""
+    """TCP Server that reuses port if it's in TIME_WAIT state"""
     allow_reuse_address = True
 
+class SensorHandler(http.server.BaseHTTPRequestHandler):
+    """HTTP request handler that simulates a sensor device"""
+    
+    def do_GET(self):
+        """Handle GET requests with simulated sensor data"""
+        # Parse URL to check if JSON endpoint was requested
+        parsed_path = urlparse(self.path)
+        path = parsed_path.path
+        
+        # Generate random sensor values
+        temp = 20 + 5 * random.random() + 5 * np.sin(time.time() / 10)
+        humidity = 20 + 30 * random.random()
+        gas = 1000 + 5000 * random.random()
+        
+        # Build sensor data dictionary
+        sensor_data = {
+            "temp": round(temp, 2),
+            "humidity": round(humidity, 2),
+            "gas": round(gas, 2)
+        }
+        
+        # Check if JSON endpoint was requested (default for programmatic access)
+        if path == "/" or path == "/json":
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')  # Allow CORS
+            self.end_headers()
+            
+            # Return JSON data
+            self.wfile.write(json.dumps(sensor_data).encode('utf-8'))
+            
+            # For debugging
+            print(f"Sent JSON data - Temp: {temp:.2f}°C, Humidity: {humidity:.2f}%, Gas: {gas:.2f}Ω")
+            
+        elif path == "/html":
+            # HTML view for browser testing
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            
+            # Format HTML response
+            html = f"""
+            <html>
+            <head>
+                <title>BME688 Sensor Dashboard</title>
+                <meta http-equiv="refresh" content="2">
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                    h1 {{ color: #333; }}
+                    .data {{ font-size: 1.2em; }}
+                    .value {{ font-weight: bold; color: #0066cc; }}
+                </style>
+            </head>
+            <body>
+                <h1>BME688 Sensor Dashboard</h1>
+                <div class="data">
+                    Temperature: <span class="value">{temp:.2f} °C</span>
+                </div>
+                <div class="data">
+                    Humidity: <span class="value">{humidity:.2f} %</span>
+                </div>
+                <div class="data">
+                    Gas Resistance: <span class="value">{gas:.2f} Ω</span>
+                </div>
+                <p>
+                    <a href="/">View JSON Data</a> | 
+                    <a href="/config">View Configuration</a>
+                </p>
+                <p><small>Data updates automatically every 2 seconds</small></p>
+            </body>
+            </html>
+            """
+            
+            # Convert to bytes and send
+            self.wfile.write(html.encode('utf-8'))
+            
+        elif path == "/config":
+            # Configuration view
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            
+            html = """
+            <html>
+            <head>
+                <title>BME688 Configuration</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; }
+                    h1 { color: #333; }
+                    table { border-collapse: collapse; width: 100%; }
+                    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                    th { background-color: #f2f2f2; }
+                </style>
+            </head>
+            <body>
+                <h1>BME688 Configuration</h1>
+                <table>
+                    <tr>
+                        <th>Parameter</th>
+                        <th>Value</th>
+                    </tr>
+                    <tr>
+                        <td>Endpoints</td>
+                        <td>/ (JSON), /html (HTML), /config (This page)</td>
+                    </tr>
+                    <tr>
+                        <td>Update Interval</td>
+                        <td>~1 second</td>
+                    </tr>
+                    <tr>
+                        <td>Sensor Type</td>
+                        <td>BME688 (Simulated)</td>
+                    </tr>
+                </table>
+                <p><a href="/html">Back to Dashboard</a></p>
+            </body>
+            </html>
+            """
+            
+            self.wfile.write(html.encode('utf-8'))
+        else:
+            # Not found
+            self.send_response(404)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"404 Not Found")
+    
+    def log_message(self, format, *args):
+        """Silence server logs"""
+        return
+
 def free_port():
-    """Attempt to free the port if it's in use"""
+    """Free the port if it's in use"""
     global current_server
     
-    # If we have a server running, stop it first
     if current_server:
-        try:
-            stop_server(current_server)
-        except Exception as e:
-            print(f"Error stopping existing server: {e}")
-    
-    # Try to forcibly free the port by finding and killing any process using it
-    try:
-        # This works on Unix-based systems
-        if sys.platform != 'win32':
-            os.system(f"lsof -ti:{PORT} | xargs kill -9 2>/dev/null")
-        else:
-            # For Windows
-            os.system(f"for /f \"tokens=5\" %a in ('netstat -aon ^| findstr :{PORT}') do taskkill /f /pid %a")
-    except Exception as e:
-        print(f"Warning: Could not forcibly free port: {e}")
-    
-    # Add a small delay to ensure port is released
-    time.sleep(1)
+        print("Stopping existing server...")
+        current_server.shutdown()
+        current_server.server_close()
+        current_server = None
+        # Give it a moment to fully close
+        time.sleep(0.5)
 
 def start_server():
-    """Start the HTTP server in a separate thread"""
-    global current_server
-    
-    # Try to free the port first
+    """Start the HTTP server"""
     free_port()
-    
     try:
-        # Create and start the server with reuse address option
         server = ReuseAddressServer((HOST, PORT), SensorHandler)
+        global current_server
         current_server = server
         
+        # Start server in a thread
         server_thread = threading.Thread(target=server.serve_forever)
         server_thread.daemon = True
         server_thread.start()
         
-        # Start the sensor data update thread
-        update_thread = threading.Thread(target=update_sensor_data)
-        update_thread.daemon = True
-        update_thread.start()
-        
         print(f"Dummy sensor server running at http://{HOST}:{PORT}/")
-        return server
-    except OSError as e:
-        print(f"Error starting server: {e}")
-        print("Could not start server even after trying to free the port.")
-        return None
-
-def stop_server(server):
-    """Stop the HTTP server"""
-    global running, current_server
-    if server:
-        running = False
+        print("Press Ctrl+C to stop the server")
+        
+        # Keep the main thread alive
         try:
-            server.shutdown()
-            server.server_close()
-            current_server = None
-            print("Sensor server stopped")
-        except Exception as e:
-            print(f"Error stopping server: {e}")
-
-if __name__ == "__main__":
-    try:
-        server = start_server()
-        if server:
-            print("Press Ctrl+C to stop the server")
             while True:
                 time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-    finally:
-        stop_server(server)
+        except KeyboardInterrupt:
+            server.shutdown()
+            server.server_close()
+            print("\nServer stopped")
+    
+    except OSError as e:
+        print(f"Error starting server: {e}")
+
+if __name__ == "__main__":
+    start_server()
